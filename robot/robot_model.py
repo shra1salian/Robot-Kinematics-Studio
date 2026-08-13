@@ -30,6 +30,78 @@ class RobotModelError(Exception):
 
 
 @dataclass
+class JointConfig:
+    """A single row of Robot Builder input: everything needed to
+    construct one (Joint, Link) pair.
+
+    This is the boundary object between the GUI (which works in
+    user-friendly units: degrees for revolute limits) and the internal
+    model (which is always SI: radians). The Robot Builder panel is
+    responsible for the degrees->radians conversion before building a
+    JointConfig; this class itself just validates internal
+    consistency and does not know about degrees.
+
+    Attributes:
+        name: Human-readable joint name, e.g. "J1".
+        joint_type: REVOLUTE or PRISMATIC.
+        axis: Joint axis (X, Y, or Z for Phase 2).
+        link_length: Length in meters of the link following this joint.
+        minimum_limit: Lower joint limit (radians for revolute, meters
+            for prismatic).
+        maximum_limit: Upper joint limit (radians for revolute, meters
+            for prismatic).
+    """
+
+    name: str
+    joint_type: JointType
+    axis: JointAxis
+    link_length: float
+    minimum_limit: float
+    maximum_limit: float
+
+    def validate(self, row_label: str | None = None) -> List[str]:
+        """Validate this row in isolation and return a list of
+        human-readable error messages (empty list = valid).
+
+        Args:
+            row_label: Optional label used to prefix error messages,
+                e.g. "Joint 3". Defaults to this config's name.
+        """
+        label = row_label or self.name
+        errors: List[str] = []
+
+        if not self.name or not self.name.strip():
+            errors.append(f"{label}: name must not be empty.")
+
+        if self.link_length < 0:
+            errors.append(
+                f"{label}: link length must be non-negative "
+                f"(got {self.link_length})."
+            )
+
+        if self.minimum_limit > self.maximum_limit:
+            errors.append(
+                f"{label}: minimum limit ({self.minimum_limit:.4f}) "
+                f"exceeds maximum limit ({self.maximum_limit:.4f})."
+            )
+
+        if self.joint_type is JointType.REVOLUTE:
+            # Sanity bound: reject absurd revolute limits beyond +/- 360 deg
+            # (2*pi rad) since anything larger is almost certainly a unit
+            # mistake (e.g. entering radians where degrees were expected).
+            two_pi = 2 * np.pi
+            if abs(self.minimum_limit) > two_pi or abs(self.maximum_limit) > two_pi:
+                errors.append(
+                    f"{label}: revolute limits look out of range "
+                    f"({np.degrees(self.minimum_limit):.1f} deg to "
+                    f"{np.degrees(self.maximum_limit):.1f} deg). "
+                    f"Expected within +/-360 deg."
+                )
+
+        return errors
+
+
+@dataclass
 class RobotModel:
     """A serial-chain robot manipulator.
 
@@ -160,6 +232,91 @@ class RobotModel:
     def end_effector_pose(self) -> np.ndarray:
         """Return the 4x4 end-effector pose for the current joint values."""
         return self.compute_frames()[-1].transform
+
+    @staticmethod
+    def validate_configs(configs: List[JointConfig]) -> List[str]:
+        """Validate a full list of JointConfig rows as a whole, in
+        addition to each row's own validate().
+
+        This is the function the Robot Builder panel should call
+        BEFORE attempting to construct a RobotModel, so invalid
+        configurations are caught and reported clearly instead of
+        silently propagating into the model (Section 5 of the design
+        spec).
+
+        Args:
+            configs: Ordered list of JointConfig, one per joint.
+
+        Returns:
+            List of human-readable error strings. Empty means valid.
+        """
+        errors: List[str] = []
+
+        if len(configs) == 0:
+            errors.append("Robot must have at least 1 degree of freedom.")
+            return errors
+
+        for i, cfg in enumerate(configs):
+            errors.extend(cfg.validate(row_label=f"Joint {i + 1} ({cfg.name})"))
+
+        names = [c.name.strip() for c in configs]
+        duplicates = {n for n in names if names.count(n) > 1 and n}
+        if duplicates:
+            errors.append(
+                f"Joint names must be unique. Duplicated: {', '.join(sorted(duplicates))}."
+            )
+
+        return errors
+
+    @classmethod
+    def from_config(
+        cls,
+        name: str,
+        configs: List[JointConfig],
+    ) -> "RobotModel":
+        """Construct a RobotModel from a list of JointConfig rows, e.g.
+        as produced by the Robot Builder panel.
+
+        Args:
+            name: Name for the resulting robot.
+            configs: Ordered list of JointConfig, base to end-effector.
+
+        Returns:
+            A new RobotModel instance.
+
+        Raises:
+            RobotModelError: if `configs` fails validation. Callers
+                that want per-field error messages ahead of time
+                should call `RobotModel.validate_configs(configs)`
+                first (e.g. to show them in the GUI) rather than
+                relying solely on this exception.
+        """
+        errors = cls.validate_configs(configs)
+        if errors:
+            raise RobotModelError(
+                "Cannot build robot, invalid configuration:\n- "
+                + "\n- ".join(errors)
+            )
+
+        joints: List[Joint] = []
+        links: List[Link] = []
+        for i, cfg in enumerate(configs):
+            joints.append(
+                Joint(
+                    id=i,
+                    name=cfg.name,
+                    joint_type=cfg.joint_type,
+                    axis=cfg.axis,
+                    joint_value=0.0,
+                    minimum_limit=cfg.minimum_limit,
+                    maximum_limit=cfg.maximum_limit,
+                )
+            )
+            links.append(
+                Link(id=i, name=f"Link {i + 1}", length=cfg.link_length)
+            )
+
+        return cls(name=name, joints=joints, links=links)
 
 
 def create_demo_2dof_robot() -> RobotModel:
