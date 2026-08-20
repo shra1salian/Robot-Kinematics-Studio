@@ -113,8 +113,22 @@ class RobotBuilderPanel(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["Joint", "Type", "Axis", "Link Length (m)", "Min Limit", "Max Limit"]
         )
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setMinimumSectionSize(50)
+        header.setStretchLastSection(False)
+        self.table.setColumnWidth(COL_NAME, 50)
+        self.table.setColumnWidth(COL_TYPE, 95)
+        self.table.setColumnWidth(COL_AXIS, 60)
+        self.table.setColumnWidth(COL_LINK_LENGTH, 110)
+        self.table.setColumnWidth(COL_MIN_LIMIT, 110)
+        self.table.setColumnWidth(COL_MAX_LIMIT, 110)
         self.table.verticalHeader().setVisible(False)
+        self.table.setMinimumWidth(
+            sum(
+                self.table.columnWidth(c) for c in range(COLUMN_COUNT)
+            ) + 20
+        )
         layout.addWidget(self.table, stretch=1)
 
         self.limit_hint_label = QLabel(
@@ -174,6 +188,8 @@ class RobotBuilderPanel(QWidget):
 
         # Type combo
         type_combo = QComboBox()
+        type_combo.setMinimumContentsLength(9)
+        type_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         type_combo.addItems(["Revolute", "Prismatic"])
         type_combo.setCurrentText("Revolute" if joint_type is JointType.REVOLUTE else "Prismatic")
         type_combo.currentTextChanged.connect(lambda _text, r=row: self._on_type_changed(r))
@@ -190,6 +206,7 @@ class RobotBuilderPanel(QWidget):
         length_spin.setRange(0.0, 10.0)
         length_spin.setDecimals(3)
         length_spin.setSingleStep(0.01)
+        length_spin.setMinimumWidth(95)
         length_spin.setValue(link_length)
         self.table.setCellWidget(row, COL_LINK_LENGTH, length_spin)
 
@@ -199,6 +216,7 @@ class RobotBuilderPanel(QWidget):
         for spin in (min_spin, max_spin):
             spin.setDecimals(3)
             spin.setSingleStep(1.0)
+            spin.setMinimumWidth(95)
         self.table.setCellWidget(row, COL_MIN_LIMIT, min_spin)
         self.table.setCellWidget(row, COL_MAX_LIMIT, max_spin)
 

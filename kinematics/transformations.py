@@ -144,6 +144,77 @@ def extract_rotation(T: np.ndarray) -> np.ndarray:
     return T[:3, :3].copy()
 
 
+def rotation_matrix_to_euler_xyz(R: np.ndarray) -> np.ndarray:
+    """Convert a rotation matrix to intrinsic XYZ Euler angles
+    (commonly presented as Roll/Pitch/Yaw about X/Y/Z respectively).
+
+    Uses the standard R = Rz(yaw) @ Ry(pitch) @ Rx(roll) convention.
+    Near the gimbal-lock singularity (pitch = +/-90 deg) the roll and
+    yaw are not uniquely defined; this function returns one valid
+    solution (roll = 0) in that case rather than an arbitrary NaN.
+
+    Args:
+        R: 3x3 rotation matrix.
+
+    Returns:
+        3-element array [roll, pitch, yaw] in radians.
+    """
+    sy = -R[2, 0]
+    sy = np.clip(sy, -1.0, 1.0)
+    pitch = np.arcsin(sy)
+
+    if np.isclose(abs(sy), 1.0, atol=1e-8):
+        # Gimbal lock: roll and yaw are coupled: pick roll = 0.
+        roll = 0.0
+        yaw = np.arctan2(-R[0, 1], R[1, 1])
+    else:
+        roll = np.arctan2(R[2, 1], R[2, 2])
+        yaw = np.arctan2(R[1, 0], R[0, 0])
+
+    return np.array([roll, pitch, yaw])
+
+
+def rotation_matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
+    """Convert a rotation matrix to a unit quaternion [w, x, y, z]
+    using Shepperd's method for numerical stability across all
+    rotation magnitudes.
+
+    Args:
+        R: 3x3 rotation matrix.
+
+    Returns:
+        4-element array [w, x, y, z], normalized to unit length.
+    """
+    trace = np.trace(R)
+    if trace > 0:
+        s = 0.5 / np.sqrt(trace + 1.0)
+        w = 0.25 / s
+        x = (R[2, 1] - R[1, 2]) * s
+        y = (R[0, 2] - R[2, 0]) * s
+        z = (R[1, 0] - R[0, 1]) * s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+        w = (R[2, 1] - R[1, 2]) / s
+        x = 0.25 * s
+        y = (R[0, 1] + R[1, 0]) / s
+        z = (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+        w = (R[0, 2] - R[2, 0]) / s
+        x = (R[0, 1] + R[1, 0]) / s
+        y = 0.25 * s
+        z = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+        w = (R[1, 0] - R[0, 1]) / s
+        x = (R[0, 2] + R[2, 0]) / s
+        y = (R[1, 2] + R[2, 1]) / s
+        z = 0.25 * s
+
+    q = np.array([w, x, y, z])
+    return q / np.linalg.norm(q)
+
+
 def is_valid_transform(T: np.ndarray, tol: float = 1e-6) -> bool:
     """Check that a matrix is a valid 4x4 homogeneous transform.
 

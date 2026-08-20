@@ -185,53 +185,56 @@ class RobotModel:
         """Compute the local transform contributed by a single joint's
         current value (rotation for revolute, translation for prismatic).
 
-        This is a Phase-1 convenience used by the demo robot; the full
-        generic FK engine (Phase 3) will build on the same primitives
-        from kinematics.transformations.
+        Thin wrapper around the generic FK engine
+        (kinematics.forward_kinematics) so there is exactly one
+        implementation of this math in the whole project.
         """
-        from kinematics import transformations as tf
+        from kinematics import forward_kinematics as fk
 
-        value = joint.effective_value()
-        axis_vec = joint.axis.as_vector()
-
-        if joint.is_revolute():
-            R = tf.rotation_about_axis(axis_vec, value)
-            return tf.homogeneous_transform(R, np.zeros(3))
-        else:  # prismatic
-            p = axis_vec * value
-            return tf.homogeneous_transform(np.eye(3), p)
+        return fk.joint_local_transform(joint)
 
     def link_transform(self, link: Link) -> np.ndarray:
         """Return the fixed transform representing a link's extension
         (translation of `length` along the local X axis)."""
-        from kinematics import transformations as tf
+        from kinematics import forward_kinematics as fk
 
-        return tf.translation(link.length, 0.0, 0.0)
+        return fk.link_transform(link)
+
+    def compute_fk(self):
+        """Run the generic forward-kinematics engine for the robot's
+        current joint values.
+
+        Returns:
+            kinematics.forward_kinematics.FKResult, including every
+            intermediate joint transform (T_0_1 ... T_0_n) needed by
+            the Jacobian (Phase 6) and IK (Phase 5) modules.
+        """
+        from kinematics import forward_kinematics as fk
+
+        return fk.compute_forward_kinematics(
+            self.joints, self.links, base_transform=self.base_frame.transform
+        )
 
     def compute_frames(self) -> List[Frame]:
         """Compute and return the world-frame pose of every joint frame,
-        in order, using the current joint values. This is a Phase-1
-        convenience method for the hard-coded demo robot and simple
-        visualization; it will be superseded by the generic FK engine
-        in Phase 3.
+        in order, using the current joint values. This is a thin
+        Frame-naming wrapper around `compute_fk()` / the generic FK
+        engine, used by the visualization layer.
 
         Returns:
             List of Frame objects: [Base, J1, J2, ..., Jn, EndEffector]
         """
-        frames = [Frame(self.base_frame.name, self.base_frame.transform.copy())]
-        T = self.base_frame.transform.copy()
+        fk_result = self.compute_fk()
 
-        for joint, link in zip(self.joints, self.links):
-            T = T @ self.joint_local_transform(joint)
+        frames = [Frame(self.base_frame.name, fk_result.base_transform.copy())]
+        for joint, T in zip(self.joints, fk_result.joint_transforms):
             frames.append(Frame(joint.name, T.copy()))
-            T = T @ self.link_transform(link)
-
-        frames.append(Frame("End Effector", T.copy()))
+        frames.append(Frame("End Effector", fk_result.end_effector_transform.copy()))
         return frames
 
     def end_effector_pose(self) -> np.ndarray:
         """Return the 4x4 end-effector pose for the current joint values."""
-        return self.compute_frames()[-1].transform
+        return self.compute_fk().end_effector_transform
 
     @staticmethod
     def validate_configs(configs: List[JointConfig]) -> List[str]:

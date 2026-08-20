@@ -1,13 +1,13 @@
 """
 main_window.py
 
-Phase 2 main window: hosts the Robot Builder panel (left), the 3D
-viewport (center), and a live robot-info panel (right). The user can
-now construct arbitrary serial robots via the Robot Builder instead of
-only seeing the hard-coded Phase 1 demo robot.
+Phase 3 main window: hosts the Robot Builder panel (left), the 3D
+viewport (center), and a tabbed right-hand panel with "Robot Info" and
+"Forward Kinematics" (live end-effector position/orientation/transform,
+via kinematics/forward_kinematics.py).
 
-Joint sliders, FK/IK/analysis panels still arrive in later phases (see
-Section 22 of the design spec).
+Joint sliders, IK, and analysis panels still arrive in later phases
+(see Section 22 of the design spec).
 """
 
 from __future__ import annotations
@@ -19,12 +19,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QFrame,
+    QTabWidget,
 )
 from PySide6.QtCore import Qt
 
 from robot.robot_model import RobotModel, create_demo_2dof_robot
 from gui.visualization_widget import VisualizationWidget
 from gui.robot_builder import RobotBuilderPanel
+from gui.kinematics_panel import KinematicsPanel
 
 
 class MainWindow(QMainWindow):
@@ -32,8 +34,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Robot Kinematics Studio — Phase 2")
-        self.resize(1400, 850)
+        self.setWindowTitle("Robot Kinematics Studio \u2014 Phase 3")
+        self.resize(1650, 850)
 
         self.robot: RobotModel = create_demo_2dof_robot()
 
@@ -51,7 +53,7 @@ class MainWindow(QMainWindow):
         # Left: Robot Builder panel
         builder_frame = QFrame(self)
         builder_frame.setFrameShape(QFrame.StyledPanel)
-        builder_frame.setFixedWidth(360)
+        builder_frame.setFixedWidth(620)
         builder_layout = QVBoxLayout(builder_frame)
         builder_layout.setContentsMargins(10, 10, 10, 10)
 
@@ -65,34 +67,46 @@ class MainWindow(QMainWindow):
         self.viz_widget = VisualizationWidget(self)
         root_layout.addWidget(self.viz_widget, stretch=1)
 
-        # Right: live robot info panel
-        self.info_frame = QFrame(self)
-        self.info_frame.setFrameShape(QFrame.StyledPanel)
-        self.info_frame.setFixedWidth(260)
-        self.info_layout = QVBoxLayout(self.info_frame)
+        # Right: tabbed panel -- Robot Info + Forward Kinematics
+        right_frame = QFrame(self)
+        right_frame.setFrameShape(QFrame.StyledPanel)
+        right_frame.setFixedWidth(340)
+        right_layout = QVBoxLayout(right_frame)
+        right_layout.setContentsMargins(10, 10, 10, 10)
+
+        self.right_tabs = QTabWidget(self)
+
+        self.info_tab = QWidget()
+        self.info_layout = QVBoxLayout(self.info_tab)
         self.info_layout.setAlignment(Qt.AlignTop)
-        root_layout.addWidget(self.info_frame, stretch=0)
+        self.right_tabs.addTab(self.info_tab, "Robot Info")
+
+        self.kinematics_panel = KinematicsPanel(self)
+        self.right_tabs.addTab(self.kinematics_panel, "Forward Kinematics")
+
+        right_layout.addWidget(self.right_tabs)
+        root_layout.addWidget(right_frame, stretch=0)
 
         self._populate_info_panel()
 
         self.statusBar().showMessage(
-            f"Loaded '{self.robot.name}' — {self.robot.dof} DOF"
+            f"Loaded '{self.robot.name}' \u2014 {self.robot.dof} DOF"
         )
 
     def _on_robot_built(self, robot: RobotModel) -> None:
         """Slot connected to RobotBuilderPanel.robot_built: swap in the
         newly constructed robot and refresh everything that depends on
-        it (3D view, info panel, status bar).
+        it (3D view, info panel, FK panel, status bar).
         """
         self.robot = robot
         self._refresh_view()
         self._populate_info_panel()
         self.statusBar().showMessage(
-            f"Loaded '{self.robot.name}' — {self.robot.dof} DOF"
+            f"Loaded '{self.robot.name}' \u2014 {self.robot.dof} DOF"
         )
 
     def _populate_info_panel(self) -> None:
-        """(Re)draw the right-hand info panel to reflect self.robot."""
+        """(Re)draw the "Robot Info" tab to reflect self.robot."""
         # Clear existing widgets
         while self.info_layout.count():
             item = self.info_layout.takeAt(0)
@@ -134,14 +148,17 @@ class MainWindow(QMainWindow):
             self.info_layout.addWidget(QLabel(f"{link.name}: {link.length:.3f} m"))
 
         note = QLabel(
-            "\nJoint sliders, forward kinematics, and analysis "
-            "panels will be added in later phases."
+            "\nSee the 'Forward Kinematics' tab for live end-effector "
+            "position, orientation, and transform. Joint sliders and "
+            "further analysis panels will be added in later phases."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #777777; font-size: 11px;")
         self.info_layout.addWidget(note)
 
     def _refresh_view(self) -> None:
-        """Push the current robot state into the 3D viewport."""
+        """Push the current robot state into the 3D viewport and the
+        Forward Kinematics panel."""
         self.viz_widget.update_robot(self.robot)
         self.viz_widget.reset_camera()
+        self.kinematics_panel.update_robot(self.robot)
