@@ -10,12 +10,18 @@ axis, link length, limits), and construct an arbitrary serial robot
 without touching Python source code. (The builder table's columns were
 also widened this phase for readability at normal screen widths.)
 
-Phase 3 (this phase) adds the **generic forward-kinematics engine**
+Phase 3 added the **generic forward-kinematics engine**
 (`kinematics/forward_kinematics.py`) — a single, chain-agnostic
 implementation used by any robot built via the Robot Builder, not just
 the 2-DOF demo — plus a live **Forward Kinematics** results tab showing
 end-effector position, orientation (rotation matrix, Roll/Pitch/Yaw,
 and quaternion), and the full 4×4 homogeneous transform.
+
+Phase 4 (this phase) adds **interactive joint control**: a
+**"Joint Control"** tab with one slider per joint (degrees for
+revolute, millimeters for prismatic), each respecting that joint's own
+limits. Dragging a slider updates the robot in real time — the 3D
+viewport and the Forward Kinematics tab both refresh immediately.
 
 ## 1. Project structure
 
@@ -27,13 +33,14 @@ robot_kinematics_studio/
 │   └── config.py          app-wide constants
 ├── gui/
 │   ├── main_window.py           Main window: builder + viewport + tabbed
-│   │                            info/FK panel
+│   │                            info/joint-control/FK panel
 │   ├── robot_builder.py         Robot Builder panel (DOF + joint table, Phase 2)
+│   ├── joint_panel.py           Interactive joint sliders (Phase 4)
 │   ├── kinematics_panel.py      Live FK results panel (Phase 3): position,
 │   │                            orientation, full transform
 │   ├── visualization_widget.py  Qt wrapper around the PyVista viewport
-│   └── (joint_panel.py, analysis_panel.py, trajectory_panel.py —
-│         placeholders for later phases)
+│   └── (analysis_panel.py, trajectory_panel.py — placeholders for
+│         later phases)
 ├── robot/
 │   ├── joint.py            Joint data model (type, axis, limits, value)
 │   ├── link.py              Link data model (length, radius)
@@ -59,6 +66,8 @@ robot_kinematics_studio/
 │   │                              2-link planar equations (Section 24),
 │   │                              generic FK engine tests (Phase 3)
 │   ├── test_robot_builder.py     JointConfig validation + from_config (Phase 2)
+│   ├── test_joint_control.py     slider <-> joint-value mapping,
+│   │                              unit conversion, signals (Phase 4)
 │   ├── test_jacobian.py          skipped placeholder (Phase 6)
 │   └── test_ik.py                skipped placeholder (Phase 5)
 ├── requirements.txt
@@ -86,39 +95,28 @@ python -m app.main
 
 ## 4. Expected behavior
 
-- A window titled **"Robot Kinematics Studio — Phase 3"** opens (1650×850).
+- A window titled **"Robot Kinematics Studio — Phase 4"** opens (1650×850).
 - On launch, the 3D viewport shows the same hard-coded 2‑DOF demo robot
-  from Phase 1 (base cube, blue link cylinders, orange joint spheres,
-  red end-effector marker, RGB coordinate triads at each frame, world
-  axes, and a faint ground grid). Rotate/pan/zoom with the mouse.
-- The **left panel ("Robot Builder")** lets you:
-  1. Enter a robot name and choose a DOF count (1–8) via the spin box.
-  2. Click **"Generate Joint Table"** to create one row per joint, with
-     editable Type (Revolute/Prismatic), Axis (X/Y/Z), Link Length
-     (meters), and Min/Max Limit. Limits are entered in **degrees**
-     for revolute joints and **meters** for prismatic joints — this is
-     converted to radians internally at the GUI boundary, so the rest
-     of the app never sees anything but SI units. Columns are sized so
-     "Revolute"/"Prismatic" and numeric values are fully readable.
-  3. Changing a row's Type resets that row's limit fields to sensible
-     defaults for the new type.
-  4. Click **"Build Robot"** to validate and construct the robot.
-     - On success: the 3D viewport, the right-hand tabbed panel, and
-       the status bar all update immediately to the new robot.
-     - On failure (e.g. empty name, min > max, negative link length,
-       duplicate joint names, or revolute limits far outside
-       ±360°): a message box lists every problem found — nothing is
-       silently allowed through.
-  5. Changing the DOF count and regenerating preserves values already
-     entered for rows that still exist, so you don't lose your edits
-     when only adding/removing a joint or two.
-- The **right panel** is now tabbed:
-  - **"Robot Info"** — name, DOF, each joint's type/axis/value/limits,
-    and each link's length (same as Phase 2).
-  - **"Forward Kinematics"** (new) — end-effector X/Y/Z position; the
-    3×3 rotation matrix; Roll/Pitch/Yaw in degrees; the quaternion
-    [w, x, y, z]; and the full 4×4 homogeneous transform. All of these
-    update immediately whenever a new robot is built.
+  from Phase 1. Rotate/pan/zoom with the mouse.
+- The **left panel ("Robot Builder")** works as in Phase 2: pick DOF,
+  generate/edit the joint table, click "Build Robot" to construct a
+  new robot. Building a robot resets the Joint Control sliders and the
+  Forward Kinematics tab to match the new robot.
+- The **right panel** is tabbed:
+  - **"Robot Info"** — static description of the loaded robot's name,
+    DOF, joints, and links (as in Phase 2/3). A note points you to the
+    Joint Control tab for live values.
+  - **"Joint Control"** (new) — one slider per joint. Revolute joints
+    show degrees, prismatic joints show millimeters, and every slider
+    is scaled to that joint's own min/max limits, so dragging fully
+    left or right always lands exactly on the joint's limit. A live
+    numeric readout sits above each slider. Dragging any slider
+    immediately updates the 3D viewport and the Forward Kinematics
+    tab. A **"Reset All Joints"** button zeros every joint at once
+    (clamped to limits where 0 is out of range).
+  - **"Forward Kinematics"** — end-effector position, orientation, and
+    full transform (as in Phase 3), now updating live as you drag
+    joint sliders, not just when a new robot is built.
 
 The demo robot loaded at startup is intentionally simple: both joints
 rotate about Z, links extend along local X, joint 1 = 0.3 rad, joint 2
@@ -181,12 +179,24 @@ rotate about Z, links extend along local X, joint 1 = 0.3 rad, joint 2
   4×4 transform, all in a monospace font for readability. No robotics
   math lives here; it only reads `FKResult` and the transformation
   converters.
+- **`gui/joint_panel.py`** (Phase 4) — `JointControlPanel`: builds one
+  `_JointSliderRow` per joint. Each `QSlider` (integer, `SLIDER_STEPS`
+  resolution) maps onto that joint's own `[minimum_limit,
+  maximum_limit]`, converting to/from degrees (revolute) or
+  millimeters (prismatic) at this GUI boundary only. Moving a slider
+  calls `joint.set_value(...)` directly and emits `robot_changed`
+  (no payload — listeners just re-read the robot) so the 3D view and
+  FK panel can refresh. Rows are rebuilt only when DOF count changes;
+  otherwise existing rows are reconfigured in place to avoid
+  unnecessary widget churn while dragging.
 - **`gui/main_window.py`** — Assembles the Robot Builder panel + 3D
-  viewport + a tabbed right panel ("Robot Info" / "Forward
-  Kinematics"), and connects `robot_built` to swap in the new robot
-  and refresh the viewport, both right-panel tabs, and the status bar.
-  No robotics math or rendering code lives here — it only calls into
-  `RobotModel`, `RobotBuilderPanel`, `KinematicsPanel`, and
+  viewport + a tabbed right panel ("Robot Info" / "Joint Control" /
+  "Forward Kinematics"). `_on_robot_built` reloads everything for a
+  newly constructed robot; `_on_joint_changed` (from the slider panel)
+  refreshes only the viewport and FK tab, since the robot's joint
+  values are already updated in place. No robotics math or rendering
+  code lives here — it only calls into `RobotModel`,
+  `RobotBuilderPanel`, `JointControlPanel`, `KinematicsPanel`, and
   `VisualizationWidget`.
 - **`app/application.py` / `app/main.py`** — Application bootstrap and
   entry point.
@@ -230,21 +240,28 @@ Currently implemented:
   identity matrix is `[1,0,0,0]`; quaternions from several rotations
   are unit length; quaternions correctly reconstruct their source
   rotation matrix.
+- **`test_joint_control.py`** (Phase 4) — one slider row per joint;
+  initial slider position matches the robot's actual starting joint
+  value (not just defaulting to 0 or midpoint); dragging fully
+  left/right lands exactly on the joint's min/max limit; moving a
+  slider emits `robot_changed` exactly once; "Reset All Joints" zeros
+  every joint; a prismatic joint's slider correctly scales in
+  millimeters; switching to a different-DOF robot rebuilds the right
+  number of rows; switching robots doesn't cross-talk values between
+  the old and new robot's joints.
 - **`test_jacobian.py`**, **`test_ik.py`** — skipped placeholders,
   filled in during Phase 5/6.
 
-All 35 active tests currently pass (2 skipped, by design).
+All 43 active tests currently pass (2 skipped, by design).
 
-## 7. Known limitations (Phase 3, by design)
+## 7. Known limitations (Phase 4, by design)
 
-- No joint sliders / interactive control yet — the Robot Builder sets
-  a robot's *shape* (DOF, types, axes, lengths, limits), but moving
-  individual joints interactively is Phase 4.
-- No Denavit-Hartenberg convenience layer yet (Section 11) — the
-  current representation is axis + link-length based; DH parameters
-  (a, alpha, d, theta) as an optional modeling layer are deferred to a
-  later phase since Phase 3's explicit deliverables were the generic
-  engine, intermediate transforms, and pose display.
+- The "Robot Info" tab shows a static snapshot taken when the robot is
+  loaded/built — it does not live-update as you drag joint sliders
+  (the "Joint Control" and "Forward Kinematics" tabs do). This avoids
+  rebuilding that tab's widgets on every slider tick.
+- No Denavit-Hartenberg convenience layer yet (Section 11) — deferred,
+  as in Phase 3.
 - Only X/Y/Z joint axes are exposed in the builder UI, though the
   underlying math (`rotation_about_axis`) already supports arbitrary
   axes.
@@ -252,23 +269,24 @@ All 35 active tests currently pass (2 skipped, by design).
 - No save/load — `RobotModel.from_config` takes `JointConfig` objects
   built by the GUI; JSON import/export of that same structure is
   Phase 9.
-- Revolute limit validation only flags values outside ±360°, as a
-  guard against unit-entry mistakes — it does not otherwise second-guess
-  unusual-but-valid limits.
+- Slider resolution is fixed at 1000 discrete steps per joint
+  (`SLIDER_STEPS` in `gui/joint_panel.py`); this is smooth enough for
+  interactive use but is not infinite precision.
 - Euler-XYZ conversion picks one valid solution (roll = 0) at the
   gimbal-lock singularity (pitch = ±90°) rather than reporting both
   degenerate solutions.
 
-## 8. Next step: Phase 4 — Interactive Joint Control
+## 8. Next step: Phase 5 — Numerical Inverse Kinematics
 
 Planned work:
-- Add `gui/joint_panel.py`: a slider per joint (degrees for revolute,
-  millimeters/meters for prismatic), each respecting that joint's
-  limits, with a numeric readout and a "Reset" action.
-- Wire slider movement straight into `RobotModel.set_joint_value()` →
-  `compute_fk()` → 3D viewport + Forward Kinematics tab, all updating
-  in real time as the user drags.
-- Verify interactive responsiveness holds up as DOF count increases
-  (up to the 8-DOF ceiling the Robot Builder currently allows).
-- Add a "Reset All" action that zeros every joint (clamped to limits
-  where 0 is out of range, matching `RobotModel.reset()`).
+- Implement `kinematics/inverse_kinematics.py`: Jacobian-based
+  numerical IK, starting with the pseudoinverse method, then damped
+  least squares.
+- Support position-only and position+orientation IK, with configurable
+  max iterations, convergence tolerance, step size, damping, and joint
+  limits.
+- Add a target-pose input and an IK results display (converged/failed,
+  iteration count, position/orientation error) as a new panel.
+- Validate against a known-solvable 2-DOF planar case (reachable
+  target) and a known-unreachable case (must correctly report
+  failure, not a silently wrong pose), per Section 12's requirements.
