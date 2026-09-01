@@ -1,4 +1,4 @@
-# Robot Kinematics Studio — Phase 3
+# Robot Kinematics Studio — Phase 4
 
 Phase 1 (foundation): project structure, PySide6 main window, PyVista
 3D viewport, robot/joint/link data model, transformation utilities,
