@@ -160,3 +160,84 @@ def compute_forward_kinematics(
         joint_transforms=joint_transforms,
         end_effector_transform=T.copy(),
     )
+
+
+def joint_local_transform_at(joint: Joint, value: float) -> np.ndarray:
+    """Like `joint_local_transform`, but uses an explicit `value`
+    instead of the joint's stored `joint_value`. Used by numerical
+    solvers (IK) so they can evaluate FK at trial configurations
+    without mutating the live Joint objects.
+
+    Args:
+        joint: The joint (used for its type, axis, and offset only).
+        value: The raw joint value to evaluate at (radians for
+            revolute, meters for prismatic) -- NOT including offset;
+            `joint.offset` is still applied on top, exactly like
+            `joint.effective_value()` would.
+
+    Returns:
+        4x4 homogeneous transform.
+    """
+    effective_value = value + joint.offset
+    axis_vec = joint.axis.as_vector()
+
+    if joint.is_revolute():
+        R = tf.rotation_about_axis(axis_vec, effective_value)
+        return tf.homogeneous_transform(R, np.zeros(3))
+    else:  # prismatic
+        p = axis_vec * effective_value
+        return tf.homogeneous_transform(np.eye(3), p)
+
+
+def compute_forward_kinematics_for_values(
+    joints: List[Joint],
+    links: List[Link],
+    q: np.ndarray,
+    base_transform: Optional[np.ndarray] = None,
+) -> FKResult:
+    """Compute forward kinematics at an explicit joint-value vector
+    `q`, without reading or mutating each Joint's stored `joint_value`.
+
+    This is what numerical solvers (IK, and later trajectory
+    evaluation) should use: it lets them try candidate configurations
+    freely, purely as data, with no risk of leaving the live
+    RobotModel in a half-updated state if a solve is aborted or fails.
+
+    Args:
+        joints: Ordered list of joints, base to end-effector (used for
+            type/axis/limits/offset only -- their `joint_value` field
+            is ignored).
+        links: Ordered list of links, one per joint.
+        q: Array of length `len(joints)` with the joint values to
+            evaluate at.
+        base_transform: 4x4 pose of the base frame. Defaults to identity.
+
+    Returns:
+        FKResult for this configuration.
+
+    Raises:
+        ValueError: if `joints`, `links`, and `q` don't all have the
+            same length.
+    """
+    if len(joints) != len(links) or len(joints) != len(q):
+        raise ValueError(
+            f"joints ({len(joints)}), links ({len(links)}), and q "
+            f"({len(q)}) must all have the same length."
+        )
+
+    if base_transform is None:
+        base_transform = np.eye(4)
+
+    T = base_transform.copy()
+    joint_transforms: List[np.ndarray] = []
+
+    for joint, link, value in zip(joints, links, q):
+        T = T @ joint_local_transform_at(joint, value)
+        joint_transforms.append(T.copy())
+        T = T @ link_transform(link)
+
+    return FKResult(
+        base_transform=base_transform.copy(),
+        joint_transforms=joint_transforms,
+        end_effector_transform=T.copy(),
+    )

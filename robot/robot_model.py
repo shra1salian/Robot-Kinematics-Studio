@@ -236,6 +236,50 @@ class RobotModel:
         """Return the 4x4 end-effector pose for the current joint values."""
         return self.compute_fk().end_effector_transform
 
+    def solve_ik(
+        self,
+        target_position: np.ndarray,
+        target_orientation: "np.ndarray | None" = None,
+        apply_result: bool = False,
+        **kwargs,
+    ):
+        """Convenience wrapper around kinematics.inverse_kinematics.solve_ik
+        using this robot's current joint values as the initial guess.
+
+        Args:
+            target_position: Desired end-effector position (3-vector, m).
+            target_orientation: Desired end-effector orientation (3x3
+                rotation matrix), or None for a position-only solve.
+            apply_result: If True and the solve converges, the robot's
+                joint values are updated to the solution (via
+                `set_joint_values`, which re-clamps to limits). A
+                non-converged result is NEVER applied, even if
+                requested, since Section 12 requires that IK never
+                silently return an incorrect solution.
+            **kwargs: Forwarded to
+                kinematics.inverse_kinematics.solve_ik (method,
+                max_iterations, position_tolerance,
+                orientation_tolerance, step_size, damping,
+                respect_joint_limits).
+
+        Returns:
+            kinematics.inverse_kinematics.IKResult
+        """
+        from kinematics import inverse_kinematics as ik
+
+        result = ik.solve_ik(
+            self.joints,
+            self.links,
+            self.get_joint_values(),
+            target_position,
+            target_orientation=target_orientation,
+            base_transform=self.base_frame.transform,
+            **kwargs,
+        )
+        if apply_result and result.converged:
+            self.set_joint_values(result.joint_values)
+        return result
+
     @staticmethod
     def validate_configs(configs: List[JointConfig]) -> List[str]:
         """Validate a full list of JointConfig rows as a whole, in
