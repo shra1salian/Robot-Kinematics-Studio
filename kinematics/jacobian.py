@@ -83,3 +83,26 @@ def jacobian_condition_number(J: np.ndarray) -> float:
     if smallest < 1e-12:
         return float("inf")
     return float(largest / smallest)
+
+
+def jacobian_singular_values(J: np.ndarray) -> np.ndarray:
+    """Return the singular values of a Jacobian, descending order."""
+    return np.linalg.svd(J, compute_uv=False)
+
+
+def manipulability_measure(J: np.ndarray) -> float:
+    """Yoshikawa's manipulability measure: w = sqrt(det(J J^T)).
+
+    Computed as the product of J's singular values, which is
+    numerically equivalent to sqrt(det(J J^T)) but well-behaved for
+    non-square (redundant or under-actuated) Jacobians where det(J J^T)
+    would otherwise need to be computed via a potentially
+    ill-conditioned product directly (Section 14: "For non-square
+    Jacobians, use an appropriate singular-value-based metric instead
+    of blindly calculating a determinant.").
+
+    Returns:
+        A non-negative scalar. 0.0 exactly at a singularity.
+    """
+    singular_values = jacobian_singular_values(J)
+    return float(np.prod(singular_values))

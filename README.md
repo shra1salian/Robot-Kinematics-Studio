@@ -1,4 +1,4 @@
-# Robot Kinematics Studio — Phase 5
+# Robot Kinematics Studio — Phase 6
 
 Phase 1 (foundation): project structure, PySide6 main window, PyVista
 3D viewport, robot/joint/link data model, transformation utilities,
@@ -23,15 +23,24 @@ prismatic), each respecting that joint's own limits. Dragging a slider
 updates the robot in real time — the 3D viewport and the Forward
 Kinematics tab both refresh immediately.
 
-Phase 5 (this phase) adds **numerical inverse kinematics**: a new
-**"Inverse Kinematics"** tab where you enter a target position (and,
-optionally, orientation), pick a solver (Jacobian pseudoinverse or
-damped least squares), and solve. Convergence status, iteration count,
-and position/orientation error are reported explicitly — a
-non-converged result is never silently applied to the robot. This
-phase also introduces the core geometric Jacobian
-(`kinematics/jacobian.py`), a hard dependency of the IK solver; its
-full rank/singularity/manipulability *display* is still Phase 6.
+Phase 5 added **numerical inverse kinematics**: an **"Inverse
+Kinematics"** tab where you enter a target position (and, optionally,
+orientation), pick a solver (Jacobian pseudoinverse or damped least
+squares), and solve. Convergence status, iteration count, and
+position/orientation error are reported explicitly — a non-converged
+result is never silently applied to the robot. This phase also
+introduced the core geometric Jacobian (`kinematics/jacobian.py`), a
+hard dependency of the IK solver.
+
+Phase 6 (this phase) adds full **Jacobian & Singularity Analysis**: a
+new tab showing the live 6×n Jacobian matrix, plus rank, condition
+number, and manipulability — computed **separately for the linear
+(position) and angular (orientation) blocks**, since combining
+position (m) and orientation (rad) into one measure is dimensionally
+inconsistent, and doing so would also mask real singularities (see
+Section 5 of this README for why). A qualitative status banner ("Good"
+/ "Approaching singularity" / "Singular") updates live as you move
+joints or apply an IK solution.
 
 ## 1. Project structure
 
@@ -43,36 +52,44 @@ robot_kinematics_studio/
 │   └── config.py          app-wide constants
 ├── gui/
 │   ├── main_window.py           Main window: builder + viewport + tabbed
-│   │                            info/joint-control/FK/IK panel
+│   │                            info/joint-control/FK/IK/analysis panel
 │   ├── robot_builder.py         Robot Builder panel (DOF + joint table, Phase 2)
 │   ├── joint_panel.py           Interactive joint sliders (Phase 4)
 │   ├── kinematics_panel.py      Live FK results panel (Phase 3): position,
 │   │                            orientation, full transform
 │   ├── ik_panel.py              Inverse Kinematics panel (Phase 5): target
 │   │                            pose input, solver options, results, apply
+│   ├── analysis_panel.py        Jacobian & Singularity panel (Phase 6):
+│   │                            live matrix, rank, condition number,
+│   │                            manipulability, status banner
 │   ├── visualization_widget.py  Qt wrapper around the PyVista viewport
-│   └── (analysis_panel.py, trajectory_panel.py — placeholders for
-│         later phases)
+│   └── trajectory_panel.py — placeholder for a later phase
 ├── robot/
 │   ├── joint.py            Joint data model (type, axis, limits, value)
 │   ├── link.py              Link data model (length, radius)
 │   ├── frame.py              Named coordinate frame helper
 │   └── robot_model.py    RobotModel serial chain, JointConfig,
-│                          RobotModel.from_config(), demo 2-DOF robot
+│                          RobotModel.from_config(), solve_ik(), demo
+│                          2-DOF robot
 ├── kinematics/
 │   ├── transformations.py     rotation/translation/homogeneous transform
 │   │                          utils + Euler/RPY and quaternion conversions
 │   ├── forward_kinematics.py  generic FK engine (Phase 3): FKResult,
 │   │                          compute_forward_kinematics(), retains
 │   │                          every intermediate joint transform
-│   ├── jacobian.py            geometric Jacobian core (Phase 5, used by
-│   │                          IK); rank/condition-number helpers; full
-│   │                          display + singularity analysis is Phase 6
+│   ├── jacobian.py            geometric Jacobian (Phase 5/6):
+│   │                          compute_geometric_jacobian, rank,
+│   │                          condition number, manipulability_measure
 │   └── inverse_kinematics.py  numerical IK (Phase 5): pseudoinverse +
 │                              damped least squares, position and
 │                              position+orientation targets, explicit
 │                              convergence/failure reporting
-├── analysis/                placeholders for Phase 6–8
+├── analysis/
+│   ├── singularity.py       singularity/manipulability analysis
+│   │                        (Phase 6): linear vs angular block split,
+│   │                        qualitative status classification
+│   └── (manipulability.py, workspace.py, trajectory.py — placeholders
+│         for later phases)
 ├── visualization/
 │   ├── robot_renderer.py    draws links/joints/frames into PyVista
 │   └── (frame_renderer.py, workspace_renderer.py — placeholders)
@@ -88,10 +105,14 @@ robot_kinematics_studio/
 │   │                              unit conversion, signals (Phase 4)
 │   ├── test_jacobian.py          geometric Jacobian validated against
 │   │                              analytical 2-link planar Jacobian,
-│   │                              singularity detection (Phase 5)
-│   └── test_ik.py                IK convergence, FK(IK(target))==target,
-│                                  unreachable-target reporting, joint-limit
-│                                  respect, apply-only-on-convergence (Phase 5)
+│   │                              singularity detection, manipulability
+│   │                              measure (Phase 5/6)
+│   ├── test_ik.py                IK convergence, FK(IK(target))==target,
+│   │                              unreachable-target reporting, joint-limit
+│   │                              respect, apply-only-on-convergence (Phase 5)
+│   └── test_singularity.py       linear vs angular status split, singular/
+│                                  approaching/good classification across
+│                                  configurations (Phase 6)
 ├── requirements.txt
 └── README.md
 ```
@@ -117,39 +138,37 @@ python -m app.main
 
 ## 4. Expected behavior
 
-- A window titled **"Robot Kinematics Studio — Phase 5"** opens (1700×850).
+- A window titled **"Robot Kinematics Studio — Phase 6"** opens (1750×850).
 - On launch, the 3D viewport shows the same hard-coded 2‑DOF demo robot
   from Phase 1. Rotate/pan/zoom with the mouse.
 - The **left panel ("Robot Builder")** works as in Phase 2: pick DOF,
   generate/edit the joint table, click "Build Robot" to construct a
-  new robot. Building a robot resets the Joint Control sliders and the
-  Forward Kinematics/Inverse Kinematics tabs to match the new robot.
+  new robot. Building a robot resets every right-hand tab to match the
+  new robot. Note: a freshly built robot starts with every joint at 0,
+  which for an all-revolute-about-Z chain means fully extended in a
+  straight line — genuinely a position singularity, so don't be
+  surprised if the "Jacobian & Singularity" tab immediately shows
+  "Singular" right after building; move a joint slightly and it clears.
 - The **right panel** is tabbed:
   - **"Robot Info"** — static description of the loaded robot's name,
     DOF, joints, and links.
-  - **"Joint Control"** — one slider per joint, as in Phase 4. Dragging
-    any slider immediately updates the 3D viewport and the Forward
-    Kinematics tab.
+  - **"Joint Control"** — one slider per joint, as in Phase 4.
   - **"Forward Kinematics"** — end-effector position, orientation, and
     full transform, updating live as you drag joint sliders or apply
     an IK solution.
-  - **"Inverse Kinematics"** (new) — enter a target X/Y/Z position
-    (pre-filled with the robot's current end-effector position),
-    optionally check "Include orientation in target" and enter
-    Roll/Pitch/Yaw in degrees, choose a solver method (Damped Least
-    Squares or Pseudoinverse) and max iterations, then click
-    **"Solve IK"**. The status line reports convergence, iteration
-    count, and position/orientation error — or, on failure, one of
-    four explicit reasons ("Target unreachable", "Maximum iterations
-    exceeded", "Singularity detected", "Joint limit prevented
-    convergence"). The **"Apply Solution"** button is only enabled
-    after a converged solve, and applying it updates the robot's
-    joints, refreshing the 3D view, Joint Control sliders, and the
-    Forward Kinematics tab. Note that for robots with multiple valid
-    solutions (e.g. elbow-up/elbow-down on a 2-link arm), the solver
-    may converge to a different-but-equally-valid configuration than
-    the one you might expect — check the achieved position/orientation
-    error rather than the specific joint values.
+  - **"Inverse Kinematics"** — target-pose input and solver, as in
+    Phase 5.
+  - **"Jacobian && Singularity"** (new) — a status banner (✓ Good /
+    ⚠ Approaching singularity / ✕ Singular, color-coded), then two
+    groups: **Linear (Position) Manipulability** and **Angular
+    (Orientation) Manipulability**, each with rank, condition number,
+    and the manipulability measure; below that, the full 6×n Jacobian
+    matrix (rows `vx,vy,vz,wx,wy,wz`, one column per joint). All of it
+    updates live as you drag joint sliders or apply an IK solution.
+    Try dragging the demo robot's J2 slider toward 0° or 180° and
+    watch the status flip from Good → Approaching singularity →
+    Singular as the arm approaches full extension/fold — the classic
+    2-link singularity.
 
 The demo robot loaded at startup is intentionally simple: both joints
 rotate about Z, links extend along local X, joint 1 = 0.3 rad, joint 2
@@ -185,12 +204,14 @@ rotate about Z, links extend along local X, joint 1 = 0.3 rad, joint 2
   the Jacobian), and the end-effector transform. Works on
   plain `Joint`/`Link` lists rather than `RobotModel`, keeping the math
   layer independent of the data model that owns it.
-- **`kinematics/jacobian.py`** (Phase 5) — `compute_geometric_jacobian(
+- **`kinematics/jacobian.py`** (Phase 5/6) — `compute_geometric_jacobian(
   joints, links, fk_result)` returns the 6×n geometric Jacobian
   (`J_v` stacked on `J_w`), generalized to arbitrary joint axes via
   `forward_kinematics.joint_motion_axis_world`. Also exposes
-  `jacobian_rank` and `jacobian_condition_number`, used internally by
-  IK's singularity classification and ready for Phase 6's full display.
+  `jacobian_rank`, `jacobian_condition_number`,
+  `jacobian_singular_values`, and (Phase 6) `manipulability_measure`
+  (Yoshikawa's `sqrt(det(J J^T))`, computed as the singular-value
+  product so it stays well-behaved for non-square Jacobians).
 - **`kinematics/inverse_kinematics.py`** (Phase 5) — `solve_ik(...)`:
   Jacobian-based numerical IK supporting `IKMethod.PSEUDOINVERSE` and
   `IKMethod.DAMPED_LEAST_SQUARES`, position-only or
@@ -202,6 +223,19 @@ rotate about Z, links extend along local X, joint 1 = 0.3 rad, joint 2
   iterations exceeded, singularity detected, or joint limit prevented
   convergence). Orientation error uses the standard skew-symmetric
   axis-angle extraction from `R_target @ R_current.T`.
+- **`analysis/singularity.py`** (Phase 6) — `analyze_singularity(joints,
+  links, fk_result)` returns a `SingularityAnalysisResult` with the
+  full Jacobian plus **separate** `linear` and `angular`
+  `SubJacobianAnalysis` blocks (rank, condition number, singular
+  values, manipulability for J_v and J_w respectively), and an overall
+  `status` (`GOOD` / `APPROACHING_SINGULARITY` / `SINGULAR`). The
+  overall status is deliberately driven by the **linear** block only —
+  see the module's docstring for why: many robots (including this
+  project's own 2-link planar demo) are *structurally*
+  angular-rank-deficient at every configuration because two or more
+  joints share a parallel axis, which would otherwise falsely flag
+  every pose as singular regardless of how the robot is actually
+  positioned.
 - **`visualization/robot_renderer.py`** — Pure rendering: reads a
   `RobotModel`'s computed frames and draws cylinders/spheres/arrows
   into a PyVista plotter. No robotics math lives here.
@@ -250,16 +284,23 @@ rotate about Z, links extend along local X, joint 1 = 0.3 rad, joint 2
   a status line built from `IKResult.status_message()`. Converts
   degrees→radians for the orientation target at this GUI boundary
   only. "Apply Solution" is disabled until a solve actually converges.
+- **`gui/analysis_panel.py`** (Phase 6) — `AnalysisPanel`: reads
+  `analyze_singularity(...)` and displays the color-coded status
+  banner, linear and angular rank/condition-number/manipulability side
+  by side, and the full 6×n Jacobian as a matrix table. Purely
+  read-only display code; all analysis math lives in
+  `analysis/singularity.py`.
 - **`gui/main_window.py`** — Assembles the Robot Builder panel + 3D
   viewport + a tabbed right panel ("Robot Info" / "Joint Control" /
-  "Forward Kinematics" / "Inverse Kinematics"). `_on_robot_built`
-  reloads everything for a newly constructed robot; `_on_joint_changed`
-  and `_on_ik_solution_applied` both refresh the viewport and FK tab
-  (the latter also resyncs the joint sliders) without a full reload,
-  since the robot's joint values are already updated in place. No
-  robotics math or rendering code lives here — it only calls into
-  `RobotModel`, `RobotBuilderPanel`, `JointControlPanel`,
-  `KinematicsPanel`, `IKPanel`, and `VisualizationWidget`.
+  "Forward Kinematics" / "Inverse Kinematics" / "Jacobian &&
+  Singularity"). `_on_robot_built` reloads everything for a newly
+  constructed robot; `_on_joint_changed` and `_on_ik_solution_applied`
+  both refresh the viewport, FK tab, and analysis tab (the latter also
+  resyncs the joint sliders) without a full reload, since the robot's
+  joint values are already updated in place. No robotics math or
+  rendering code lives here — it only calls into `RobotModel`,
+  `RobotBuilderPanel`, `JointControlPanel`, `KinematicsPanel`,
+  `IKPanel`, `AnalysisPanel`, and `VisualizationWidget`.
 - **`app/application.py` / `app/main.py`** — Application bootstrap and
   entry point.
 
@@ -311,14 +352,16 @@ Currently implemented:
   millimeters; switching to a different-DOF robot rebuilds the right
   number of rows; switching robots doesn't cross-talk values between
   the old and new robot's joints.
-- **`test_jacobian.py`** (Phase 5) — the geometric Jacobian matches
+- **`test_jacobian.py`** (Phase 5/6) — the geometric Jacobian matches
   the analytical 2-link planar Jacobian across several configurations
   (Section 24); correct 6×n shape; a prismatic joint's column is
   `[axis, 0]`; a generic configuration's position sub-Jacobian is full
   rank; the classic fully-extended 2-link singularity (q2=0) is
   correctly detected via rank deficiency and a very high/infinite
   condition number; a well-conditioned configuration's condition
-  number is finite and positive.
+  number is finite and positive; manipulability is exactly 0 at the
+  singularity and positive away from it; manipulability equals the
+  product of singular values.
 - **`test_ik.py`** (Phase 5) — both `PSEUDOINVERSE` and
   `DAMPED_LEAST_SQUARES` converge on a target that's guaranteed
   reachable (built via FK from a known configuration); `FK(IK(target))
@@ -330,26 +373,43 @@ Currently implemented:
   result is *never* applied to the robot even when `apply_result=True`
   is requested; a converged result *is* applied when requested;
   mismatched initial-guess length raises `ValueError`.
+- **`test_singularity.py`** (Phase 6) — a generic configuration is
+  `GOOD`; the fully-extended and fully-folded 2-link configurations are
+  `SINGULAR`; a near-singular configuration is at least
+  `APPROACHING_SINGULARITY`; critically, a well-conditioned pose whose
+  angular block is *structurally* rank-deficient (parallel joint axes)
+  still reports `GOOD` overall, confirming the status doesn't
+  false-positive on structural properties; a 3-DOF robot with
+  non-parallel axes (Z/Y/X) *can* reach full angular rank, unlike the
+  demo robot; the returned Jacobian is the full 6×n matrix; a
+  two-independent-axis prismatic robot is correctly `GOOD` (never
+  singular, since its axes are always independent).
 
-All 58 active tests currently pass (0 skipped — every placeholder from
-earlier phases now has real implementations and tests behind it).
+All 69 active tests currently pass.
 
-## 7. Known limitations (Phase 5, by design)
+## 7. Known limitations (Phase 6, by design)
 
 - The "Robot Info" tab shows a static snapshot taken when the robot is
   loaded/built — it does not live-update as you drag joint sliders or
-  apply an IK solution (the "Joint Control" and "Forward Kinematics"
-  tabs do).
+  apply an IK solution (the "Joint Control", "Forward Kinematics", and
+  "Jacobian && Singularity" tabs do).
 - No Denavit-Hartenberg convenience layer yet (Section 11) — deferred,
   as in Phase 3.
 - Only X/Y/Z joint axes are exposed in the builder UI, though the
   underlying math (`rotation_about_axis`) already supports arbitrary
   axes.
-- The Jacobian module exposes only what IK needs (`compute_geometric_
-  jacobian`, `jacobian_rank`, `jacobian_condition_number`) — there is
-  no GUI display of the Jacobian matrix itself, no manipulability
-  measure, and no live singularity warning as you move joints; that's
-  Phase 6.
+- The overall singularity status is driven by the **linear** block
+  only, by design (see `analysis/singularity.py`'s docstring and the
+  `test_singularity.py` test confirming this). The angular block's
+  numbers are still displayed for reference, but a robot that is
+  structurally angular-rank-deficient (e.g. any chain with two or more
+  parallel-axis joints, including this project's own 2-DOF demo robot)
+  will never show that as a live warning, since it's a fixed design
+  property rather than a configuration-dependent event.
+- `analysis/manipulability.py` remains a documented placeholder — the
+  manipulability *measure* itself is implemented and displayed, but
+  further analysis (manipulability ellipsoids, task-direction-specific
+  manipulability, redundancy optimization) is out of scope for now.
 - No workspace or trajectory features yet.
 - No save/load — `RobotModel.from_config` takes `JointConfig` objects
   built by the GUI; JSON import/export of that same structure is
@@ -360,9 +420,10 @@ earlier phases now has real implementations and tests behind it).
   max-reach sphere but blocked by joint limits), though those cases
   are still correctly reported as non-converged with a different
   reason after the iteration loop runs.
-- IK's singularity/joint-limit failure classification uses fixed
-  thresholds (condition number > 1e4, ≥50% of iterations clamped) —
-  reasonable defaults, not user-configurable yet.
+- IK's singularity/joint-limit failure classification, and the
+  singularity panel's status thresholds, use fixed values (condition
+  number ≥ 20 for a warning, ≥ 1e4 for singular; ≥50% of IK iterations
+  clamped) — reasonable defaults, not user-configurable yet.
 - Slider resolution is fixed at 1000 discrete steps per joint
   (`SLIDER_STEPS` in `gui/joint_panel.py`); this is smooth enough for
   interactive use but is not infinite precision.
@@ -370,17 +431,17 @@ earlier phases now has real implementations and tests behind it).
   gimbal-lock singularity (pitch = ±90°) rather than reporting both
   degenerate solutions.
 
-## 8. Next step: Phase 6 — Jacobian + Singularity Analysis
+## 8. Next step: Phase 7 — Workspace Analysis
 
 Planned work:
-- Promote `kinematics/jacobian.py` from "IK's internal dependency" to
-  a fully displayed analysis tool: a GUI panel showing the numeric
-  Jacobian matrix live as joints move.
-- Add manipulability (`w = sqrt(det(J J^T))`, with an appropriate
-  singular-value-based metric for non-square Jacobians) alongside the
-  rank/condition-number helpers already in place.
-- Add live singularity warnings (e.g. "⚠ Approaching singularity")
-  that update as the user drags joint sliders, not just during IK.
-- Expand `tests/test_jacobian.py` with additional known singular
-  configurations across different robot topologies (not just the
-  2-link planar case).
+- Implement `analysis/workspace.py`: joint-space sampling (random or
+  systematic) across every joint's limits, running FK for each sample
+  and collecting end-effector positions into a point cloud.
+- Add `visualization/workspace_renderer.py` to render the point cloud
+  in the existing PyVista viewport, toggleable alongside the robot.
+- Add a workspace panel/tab exposing sample count, and (clearly
+  labeled as an approximation, per Section 15) estimated maximum reach
+  and workspace volume.
+- Since large sample counts are expensive, use Qt threading/signals so
+  workspace generation doesn't freeze the GUI (Section 25) — this will
+  be the project's first genuinely long-running computation.

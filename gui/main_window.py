@@ -1,14 +1,16 @@
 """
 main_window.py
 
-Phase 5 main window: hosts the Robot Builder panel (left), the 3D
+Phase 6 main window: hosts the Robot Builder panel (left), the 3D
 viewport (center), and a tabbed right-hand panel with "Robot Info",
-"Joint Control", "Forward Kinematics", and "Inverse Kinematics".
+"Joint Control", "Forward Kinematics", "Inverse Kinematics", and
+"Jacobian & Singularity" (live rank/condition-number/manipulability
+analysis, Section 14).
 
-Solving IK and applying the result behaves exactly like a slider move
-(Section 12/8): the 3D viewport, joint sliders, and FK tab all refresh
-immediately. Analysis panels (Jacobian display, singularity, workspace,
-trajectory) still arrive in later phases (Section 22).
+Every source of joint-value change (slider drag, IK apply) refreshes
+the 3D viewport, the FK tab, AND the Jacobian & Singularity tab.
+Workspace and trajectory panels still arrive in later phases
+(Section 22).
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from gui.robot_builder import RobotBuilderPanel
 from gui.kinematics_panel import KinematicsPanel
 from gui.joint_panel import JointControlPanel
 from gui.ik_panel import IKPanel
+from gui.analysis_panel import AnalysisPanel
 
 
 class MainWindow(QMainWindow):
@@ -37,8 +40,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Robot Kinematics Studio \u2014 Phase 5")
-        self.resize(1700, 850)
+        self.setWindowTitle("Robot Kinematics Studio \u2014 Phase 6")
+        self.resize(1750, 850)
 
         self.robot: RobotModel = create_demo_2dof_robot()
 
@@ -73,7 +76,7 @@ class MainWindow(QMainWindow):
         # Right: tabbed panel
         right_frame = QFrame(self)
         right_frame.setFrameShape(QFrame.StyledPanel)
-        right_frame.setFixedWidth(360)
+        right_frame.setFixedWidth(380)
         right_layout = QVBoxLayout(right_frame)
         right_layout.setContentsMargins(10, 10, 10, 10)
 
@@ -95,12 +98,16 @@ class MainWindow(QMainWindow):
         self.ik_panel.solution_applied.connect(self._on_ik_solution_applied)
         self.right_tabs.addTab(self.ik_panel, "Inverse Kinematics")
 
+        self.analysis_panel = AnalysisPanel(self)
+        self.right_tabs.addTab(self.analysis_panel, "Jacobian && Singularity")
+
         right_layout.addWidget(self.right_tabs)
         root_layout.addWidget(right_frame, stretch=0)
 
     def _load_robot(self, robot: RobotModel) -> None:
         """Fully (re)initialize the UI around a new robot: 3D view,
-        info panel, joint sliders, FK panel, IK panel, status bar.
+        info panel, joint sliders, FK panel, IK panel, analysis panel,
+        status bar.
         """
         self.robot = robot
         self.viz_widget.update_robot(self.robot)
@@ -109,6 +116,7 @@ class MainWindow(QMainWindow):
         self.joint_panel.set_robot(self.robot)
         self.kinematics_panel.update_robot(self.robot)
         self.ik_panel.set_robot(self.robot)
+        self.analysis_panel.set_robot(self.robot)
         self.statusBar().showMessage(
             f"Loaded '{self.robot.name}' \u2014 {self.robot.dof} DOF"
         )
@@ -116,8 +124,7 @@ class MainWindow(QMainWindow):
     def _on_robot_built(self, robot: RobotModel) -> None:
         """Slot connected to RobotBuilderPanel.robot_built: swap in the
         newly constructed robot and refresh everything that depends on
-        it (3D view, info panel, joint sliders, FK panel, IK panel,
-        status bar).
+        it.
         """
         self._load_robot(robot)
 
@@ -128,16 +135,17 @@ class MainWindow(QMainWindow):
         """
         self.viz_widget.update_robot(self.robot)
         self.kinematics_panel.update_robot(self.robot)
+        self.analysis_panel.update_analysis()
 
     def _on_ik_solution_applied(self) -> None:
         """Slot connected to IKPanel.solution_applied: a converged IK
         solution was applied to the robot's joint values. Refresh the
-        3D view, the joint sliders (so they reflect the new pose), and
-        the FK tab.
+        3D view, the joint sliders, the FK tab, and the analysis tab.
         """
         self.viz_widget.update_robot(self.robot)
         self.joint_panel.set_robot(self.robot)
         self.kinematics_panel.update_robot(self.robot)
+        self.analysis_panel.update_analysis()
 
     def _populate_info_panel(self) -> None:
         """(Re)draw the "Robot Info" tab to reflect self.robot."""
@@ -181,9 +189,9 @@ class MainWindow(QMainWindow):
             self.info_layout.addWidget(QLabel(f"{link.name}: {link.length:.3f} m"))
 
         note = QLabel(
-            "\nUse 'Joint Control' to move the robot directly, or "
-            "'Inverse Kinematics' to solve for a target pose. "
-            "'Forward Kinematics' always reflects the current pose."
+            "\nUse 'Joint Control' or 'Inverse Kinematics' to move the "
+            "robot. 'Forward Kinematics' and 'Jacobian && Singularity' "
+            "always reflect the current pose."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #777777; font-size: 11px;")

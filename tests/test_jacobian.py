@@ -100,3 +100,42 @@ def test_condition_number_of_well_conditioned_jacobian_is_finite_and_reasonable(
     cond = jacobian_condition_number(J[0:2, :])
     assert np.isfinite(cond)
     assert cond > 0
+
+
+# ---------------------------------------------------------------------
+# Phase 6: manipulability measure tests
+# ---------------------------------------------------------------------
+
+def test_manipulability_zero_at_singularity():
+    from kinematics.jacobian import manipulability_measure
+
+    robot = create_demo_2dof_robot()
+    robot.set_joint_values([0.5, 0.0])  # fully extended
+    fk_result = robot.compute_fk()
+    J = compute_geometric_jacobian(robot.joints, robot.links, fk_result)
+    w = manipulability_measure(J[0:2, :])
+    assert np.isclose(w, 0.0, atol=1e-9)
+
+
+def test_manipulability_positive_away_from_singularity():
+    from kinematics.jacobian import manipulability_measure
+
+    robot = create_demo_2dof_robot()
+    robot.set_joint_values([0.3, np.pi / 2])
+    fk_result = robot.compute_fk()
+    J = compute_geometric_jacobian(robot.joints, robot.links, fk_result)
+    w = manipulability_measure(J[0:2, :])
+    assert w > 0.0
+
+
+def test_manipulability_equals_singular_value_product():
+    from kinematics.jacobian import manipulability_measure, jacobian_singular_values
+
+    robot = create_demo_2dof_robot()
+    robot.set_joint_values([0.4, 0.6])
+    fk_result = robot.compute_fk()
+    J = compute_geometric_jacobian(robot.joints, robot.links, fk_result)
+    J_xy = J[0:2, :]
+    w = manipulability_measure(J_xy)
+    sv = jacobian_singular_values(J_xy)
+    assert np.isclose(w, np.prod(sv), atol=1e-9)
