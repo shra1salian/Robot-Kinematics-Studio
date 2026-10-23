@@ -1,4 +1,4 @@
-# Robot Kinematics Studio — Phase 6
+# Robot Kinematics Studio — Phase 7
 
 Phase 1 (foundation): project structure, PySide6 main window, PyVista
 3D viewport, robot/joint/link data model, transformation utilities,
@@ -32,15 +32,27 @@ result is never silently applied to the robot. This phase also
 introduced the core geometric Jacobian (`kinematics/jacobian.py`), a
 hard dependency of the IK solver.
 
-Phase 6 (this phase) adds full **Jacobian & Singularity Analysis**: a
-new tab showing the live 6×n Jacobian matrix, plus rank, condition
-number, and manipulability — computed **separately for the linear
-(position) and angular (orientation) blocks**, since combining
-position (m) and orientation (rad) into one measure is dimensionally
-inconsistent, and doing so would also mask real singularities (see
-Section 5 of this README for why). A qualitative status banner ("Good"
-/ "Approaching singularity" / "Singular") updates live as you move
-joints or apply an IK solution.
+Phase 6 added full **Jacobian & Singularity Analysis**: a tab showing
+the live 6×n Jacobian matrix, plus rank, condition number, and
+manipulability — computed **separately for the linear (position) and
+angular (orientation) blocks**, since combining position (m) and
+orientation (rad) into one measure is dimensionally inconsistent, and
+doing so would also mask real singularities (see Section 5 of this
+README for why). A qualitative status banner ("Good" / "Approaching
+singularity" / "Singular") updates live as you move joints or apply an
+IK solution.
+
+Phase 7 (this phase) adds **Workspace Analysis**: a new **"Workspace"**
+tab that samples the robot's joint space at random (within each
+joint's own limits), runs FK on every sample, and overlays the
+resulting reachable-region point cloud in the 3D viewport. Reports
+sample count, estimated maximum reach, and (when the point cloud isn't
+degenerate/planar) an estimated workspace volume — all explicitly
+labeled as *estimates*, never presented as exact (Section 15's
+requirement). Sampling runs on a background `QThread` so the GUI stays
+responsive even at large sample counts — the project's first
+genuinely long-running computation and its first use of threading
+(Section 25).
 
 ## 1. Project structure
 
@@ -52,7 +64,7 @@ robot_kinematics_studio/
 │   └── config.py          app-wide constants
 ├── gui/
 │   ├── main_window.py           Main window: builder + viewport + tabbed
-│   │                            info/joint-control/FK/IK/analysis panel
+│   │                            info/joint-control/FK/IK/analysis/workspace panel
 │   ├── robot_builder.py         Robot Builder panel (DOF + joint table, Phase 2)
 │   ├── joint_panel.py           Interactive joint sliders (Phase 4)
 │   ├── kinematics_panel.py      Live FK results panel (Phase 3): position,
@@ -62,6 +74,9 @@ robot_kinematics_studio/
 │   ├── analysis_panel.py        Jacobian & Singularity panel (Phase 6):
 │   │                            live matrix, rank, condition number,
 │   │                            manipulability, status banner
+│   ├── workspace_panel.py       Workspace Analysis panel (Phase 7):
+│   │                            sample count, background-threaded
+│   │                            sampling, estimated reach/volume
 │   ├── visualization_widget.py  Qt wrapper around the PyVista viewport
 │   └── trajectory_panel.py — placeholder for a later phase
 ├── robot/
@@ -88,11 +103,14 @@ robot_kinematics_studio/
 │   ├── singularity.py       singularity/manipulability analysis
 │   │                        (Phase 6): linear vs angular block split,
 │   │                        qualitative status classification
-│   └── (manipulability.py, workspace.py, trajectory.py — placeholders
-│         for later phases)
+│   ├── workspace.py         workspace sampling (Phase 7):
+│   │                        sample_workspace(), estimated max reach,
+│   │                        estimated convex-hull volume
+│   └── (manipulability.py, trajectory.py — placeholders for later phases)
 ├── visualization/
-│   ├── robot_renderer.py    draws links/joints/frames into PyVista
-│   └── (frame_renderer.py, workspace_renderer.py — placeholders)
+│   ├── robot_renderer.py       draws links/joints/frames into PyVista
+│   ├── workspace_renderer.py   draws the workspace point cloud (Phase 7)
+│   └── frame_renderer.py — placeholder for a later phase
 ├── io/                       placeholder for Phase 9 (save/load)
 ├── tests/
 │   ├── test_transformations.py   unit tests for rotation/translation math,
@@ -103,6 +121,9 @@ robot_kinematics_studio/
 │   ├── test_robot_builder.py     JointConfig validation + from_config (Phase 2)
 │   ├── test_joint_control.py     slider <-> joint-value mapping,
 │   │                              unit conversion, signals (Phase 4)
+│   ├── test_workspace.py         sample count, reach bounds, seed
+│   │                              reproducibility, volume estimation
+│   │                              (Phase 7)
 │   ├── test_jacobian.py          geometric Jacobian validated against
 │   │                              analytical 2-link planar Jacobian,
 │   │                              singularity detection, manipulability
@@ -138,17 +159,19 @@ python -m app.main
 
 ## 4. Expected behavior
 
-- A window titled **"Robot Kinematics Studio — Phase 6"** opens (1750×850).
+- A window titled **"Robot Kinematics Studio — Phase 7"** opens (1800×850).
 - On launch, the 3D viewport shows the same hard-coded 2‑DOF demo robot
   from Phase 1. Rotate/pan/zoom with the mouse.
 - The **left panel ("Robot Builder")** works as in Phase 2: pick DOF,
   generate/edit the joint table, click "Build Robot" to construct a
   new robot. Building a robot resets every right-hand tab to match the
-  new robot. Note: a freshly built robot starts with every joint at 0,
-  which for an all-revolute-about-Z chain means fully extended in a
-  straight line — genuinely a position singularity, so don't be
-  surprised if the "Jacobian & Singularity" tab immediately shows
-  "Singular" right after building; move a joint slightly and it clears.
+  new robot, and clears any workspace overlay from the 3D view (it
+  belonged to the old robot's joint limits, not the new one's). Note:
+  a freshly built robot starts with every joint at 0, which for an
+  all-revolute-about-Z chain means fully extended in a straight line —
+  genuinely a position singularity, so don't be surprised if the
+  "Jacobian & Singularity" tab immediately shows "Singular" right
+  after building; move a joint slightly and it clears.
 - The **right panel** is tabbed:
   - **"Robot Info"** — static description of the loaded robot's name,
     DOF, joints, and links.
@@ -158,17 +181,24 @@ python -m app.main
     an IK solution.
   - **"Inverse Kinematics"** — target-pose input and solver, as in
     Phase 5.
-  - **"Jacobian && Singularity"** (new) — a status banner (✓ Good /
-    ⚠ Approaching singularity / ✕ Singular, color-coded), then two
-    groups: **Linear (Position) Manipulability** and **Angular
-    (Orientation) Manipulability**, each with rank, condition number,
-    and the manipulability measure; below that, the full 6×n Jacobian
-    matrix (rows `vx,vy,vz,wx,wy,wz`, one column per joint). All of it
-    updates live as you drag joint sliders or apply an IK solution.
-    Try dragging the demo robot's J2 slider toward 0° or 180° and
-    watch the status flip from Good → Approaching singularity →
-    Singular as the arm approaches full extension/fold — the classic
-    2-link singularity.
+  - **"Jacobian && Singularity"** — status banner and linear/angular
+    manipulability metrics, as in Phase 6.
+  - **"Workspace"** (new) — set a sample count (100–100,000, default
+    5,000) and click **"Generate Workspace"**. Sampling runs in the
+    background (an indeterminate progress bar shows while it's
+    working; the button is disabled and re-enables when done), so the
+    3D view stays interactive throughout — try rotating the camera
+    while a large sample count is running. On completion, a purple,
+    semi-transparent point cloud overlays the 3D viewport showing the
+    sampled reachable region, and the panel reports the sample count,
+    an **estimated** maximum reach, and (for genuinely 3D/spatial
+    robots) an **estimated** workspace volume via convex hull — for
+    the planar 2-DOF demo robot, volume is correctly reported as "not
+    available" since its reachable region is flat (a 3D volume is
+    undefined for a 2D point cloud). Uncheck "Show in 3D view" to hide
+    the overlay without discarding the last result; re-check to bring
+    it back instantly (no re-sampling). Generating a new workspace
+    replaces the previous overlay.
 
 The demo robot loaded at startup is intentionally simple: both joints
 rotate about Z, links extend along local X, joint 1 = 0.3 rad, joint 2
@@ -239,9 +269,25 @@ rotate about Z, links extend along local X, joint 1 = 0.3 rad, joint 2
 - **`visualization/robot_renderer.py`** — Pure rendering: reads a
   `RobotModel`'s computed frames and draws cylinders/spheres/arrows
   into a PyVista plotter. No robotics math lives here.
+- **`analysis/workspace.py`** (Phase 7) — `sample_workspace(joints,
+  links, num_samples, ...)`: uniform random joint-space sampling
+  (each joint sampled within its own limits), FK on every sample,
+  returning a `WorkspaceResult` with the position point cloud, an
+  estimated maximum reach, and (via `scipy.spatial.ConvexHull`, when
+  the point cloud isn't degenerate) an estimated volume. Every
+  estimated figure is explicitly labeled as such — `is_estimated` is
+  always `True` on the result, and volume is `None` rather than a
+  meaningless number for planar robots.
+- **`visualization/workspace_renderer.py`** (Phase 7) — Pure
+  rendering: turns a `WorkspaceResult.positions` array into a
+  translucent PyVista point cloud, kept in its own actor list so it
+  can be shown/hidden independently of the robot geometry.
 - **`gui/visualization_widget.py`** — Qt widget embedding
   `pyvistaqt.QtInteractor`; exposes `update_robot(robot)` so the rest
-  of the GUI never touches PyVista directly.
+  of the GUI never touches PyVista directly, plus (Phase 7)
+  `show_workspace(positions)` / `clear_workspace()` for the workspace
+  overlay, which persists across `update_robot()` calls (they clear
+  independent actor lists).
 - **`robot/robot_model.py`** — `JointConfig` (Phase 2): the
   GUI-unit-agnostic row object the builder constructs, with its own
   `validate()`; `RobotModel.validate_configs(...)`: whole-list checks
@@ -290,17 +336,29 @@ rotate about Z, links extend along local X, joint 1 = 0.3 rad, joint 2
   by side, and the full 6×n Jacobian as a matrix table. Purely
   read-only display code; all analysis math lives in
   `analysis/singularity.py`.
+- **`gui/workspace_panel.py`** (Phase 7) — `WorkspacePanel`: sample
+  count control, "Generate Workspace" button, and results display.
+  `WorkspaceSamplingWorker` (a `QThread` subclass) runs
+  `sample_workspace(...)` off the GUI thread and emits `finished_ok`
+  (with the `WorkspaceResult`) or `failed` (with an error string) back
+  on the main thread via Qt signals — the standard, safe way to get
+  results out of a worker thread without touching GUI widgets from
+  the wrong thread. The panel emits `workspace_ready(positions)` /
+  `workspace_cleared()` so `MainWindow` can push the overlay into the
+  3D viewport without this panel needing to know about PyVista.
 - **`gui/main_window.py`** — Assembles the Robot Builder panel + 3D
   viewport + a tabbed right panel ("Robot Info" / "Joint Control" /
   "Forward Kinematics" / "Inverse Kinematics" / "Jacobian &&
-  Singularity"). `_on_robot_built` reloads everything for a newly
-  constructed robot; `_on_joint_changed` and `_on_ik_solution_applied`
-  both refresh the viewport, FK tab, and analysis tab (the latter also
-  resyncs the joint sliders) without a full reload, since the robot's
-  joint values are already updated in place. No robotics math or
-  rendering code lives here — it only calls into `RobotModel`,
-  `RobotBuilderPanel`, `JointControlPanel`, `KinematicsPanel`,
-  `IKPanel`, `AnalysisPanel`, and `VisualizationWidget`.
+  Singularity" / "Workspace"). `_on_robot_built` reloads everything
+  for a newly constructed robot (including clearing any workspace
+  overlay, since it belonged to the old robot's limits);
+  `_on_joint_changed` and `_on_ik_solution_applied` both refresh the
+  viewport, FK tab, and analysis tab (the latter also resyncs the
+  joint sliders) without a full reload, since the robot's joint values
+  are already updated in place. No robotics math or rendering code
+  lives here — it only calls into `RobotModel`, `RobotBuilderPanel`,
+  `JointControlPanel`, `KinematicsPanel`, `IKPanel`, `AnalysisPanel`,
+  `WorkspacePanel`, and `VisualizationWidget`.
 - **`app/application.py` / `app/main.py`** — Application bootstrap and
   entry point.
 
@@ -384,10 +442,24 @@ Currently implemented:
   demo robot; the returned Jacobian is the full 6×n matrix; a
   two-independent-axis prismatic robot is correctly `GOOD` (never
   singular, since its axes are always independent).
+- **`test_workspace.py`** (Phase 7) — requested sample count matches
+  the returned array shape; every sampled position is a real,
+  reachable FK result bounded by the robot's true maximum reach (never
+  exceeds it, even by floating-point slop); the estimated max reach is
+  plausible (never above the true maximum, gets reasonably close with
+  enough samples); identical seeds reproduce identical samples,
+  different seeds don't; a robot with tightly restricted joint limits
+  produces a visibly smaller workspace spread than one with full
+  range; the planar demo robot's volume estimate is `None` or
+  numerically ~0 (a 2D point cloud has no 3D volume); a genuinely
+  spatial 3-DOF robot *can* get a positive volume estimate; the
+  `is_estimated` flag is always `True`; zero/negative sample counts
+  and mismatched joints/links both raise `ValueError`; a prismatic
+  joint's sampled positions stay exactly within its stroke range.
 
-All 69 active tests currently pass.
+All 81 active tests currently pass.
 
-## 7. Known limitations (Phase 6, by design)
+## 7. Known limitations (Phase 7, by design)
 
 - The "Robot Info" tab shows a static snapshot taken when the robot is
   loaded/built — it does not live-update as you drag joint sliders or
@@ -410,7 +482,7 @@ All 69 active tests currently pass.
   manipulability *measure* itself is implemented and displayed, but
   further analysis (manipulability ellipsoids, task-direction-specific
   manipulability, redundancy optimization) is out of scope for now.
-- No workspace or trajectory features yet.
+- No trajectory generation or animation yet.
 - No save/load — `RobotModel.from_config` takes `JointConfig` objects
   built by the GUI; JSON import/export of that same structure is
   Phase 9.
@@ -430,18 +502,39 @@ All 69 active tests currently pass.
 - Euler-XYZ conversion picks one valid solution (roll = 0) at the
   gimbal-lock singularity (pitch = ±90°) rather than reporting both
   degenerate solutions.
+- Workspace sampling is **uniform random joint-space sampling only**
+  (Section 15 mentions "random or systematic"); systematic
+  (grid-based) sampling isn't implemented. Random sampling with enough
+  samples gives a good visual/estimate picture but can miss thin
+  features of the true reachable region (e.g. a workspace boundary
+  that only a narrow range of joint values reaches).
+- The workspace overlay reflects the robot's **shape and joint
+  limits**, not its current pose — dragging a joint slider or applying
+  an IK solution does not regenerate or move the point cloud; you must
+  click "Generate Workspace" again after changing limits (e.g. via a
+  newly built robot) for the overlay to reflect them.
+- The convex-hull volume estimate is itself an approximation of an
+  approximation: the true workspace is not generally convex, so even
+  a perfect point cloud's hull volume only bounds, rather than equals,
+  the true reachable volume.
+- Progress reporting during sampling is an indeterminate spinner, not
+  a percentage — `sample_workspace()` doesn't currently report
+  incremental progress back to the worker thread.
 
-## 8. Next step: Phase 7 — Workspace Analysis
+## 8. Next step: Phase 8 — Trajectory Generation
 
 Planned work:
-- Implement `analysis/workspace.py`: joint-space sampling (random or
-  systematic) across every joint's limits, running FK for each sample
-  and collecting end-effector positions into a point cloud.
-- Add `visualization/workspace_renderer.py` to render the point cloud
-  in the existing PyVista viewport, toggleable alongside the robot.
-- Add a workspace panel/tab exposing sample count, and (clearly
-  labeled as an approximation, per Section 15) estimated maximum reach
-  and workspace volume.
-- Since large sample counts are expensive, use Qt threading/signals so
-  workspace generation doesn't freeze the GUI (Section 25) — this will
-  be the project's first genuinely long-running computation.
+- Implement `analysis/trajectory.py`: joint-space trajectories (cubic
+  interpolation first, then quintic) between a start and end
+  configuration over a given duration, with velocity and acceleration
+  profiles derived analytically from the chosen interpolation.
+- Add Cartesian trajectories: interpolate between a start and end
+  pose, converting each intermediate pose to a joint configuration via
+  the existing IK solver (Phase 5).
+- Add `gui/trajectory_panel.py`: trajectory setup (start/end,
+  duration, interpolation method) plus Matplotlib plots of joint
+  position/velocity/acceleration vs. time.
+- Add robot animation: playback controls (play/pause/reset/speed) that
+  drive the robot smoothly through the computed trajectory in the 3D
+  viewport, reusing the same joint-value → FK → render pipeline every
+  other phase already relies on.

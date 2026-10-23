@@ -1,16 +1,15 @@
 """
 main_window.py
 
-Phase 6 main window: hosts the Robot Builder panel (left), the 3D
+Phase 7 main window: hosts the Robot Builder panel (left), the 3D
 viewport (center), and a tabbed right-hand panel with "Robot Info",
-"Joint Control", "Forward Kinematics", "Inverse Kinematics", and
-"Jacobian & Singularity" (live rank/condition-number/manipulability
-analysis, Section 14).
+"Joint Control", "Forward Kinematics", "Inverse Kinematics",
+"Jacobian & Singularity", and "Workspace" (background-threaded
+sampling + point-cloud overlay, Section 15/25).
 
-Every source of joint-value change (slider drag, IK apply) refreshes
-the 3D viewport, the FK tab, AND the Jacobian & Singularity tab.
-Workspace and trajectory panels still arrive in later phases
-(Section 22).
+Building a new robot clears any workspace overlay from the old one
+(it's no longer valid). Trajectory generation still arrives in a
+later phase (Section 22).
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ from gui.kinematics_panel import KinematicsPanel
 from gui.joint_panel import JointControlPanel
 from gui.ik_panel import IKPanel
 from gui.analysis_panel import AnalysisPanel
+from gui.workspace_panel import WorkspacePanel
 
 
 class MainWindow(QMainWindow):
@@ -40,8 +40,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Robot Kinematics Studio \u2014 Phase 6")
-        self.resize(1750, 850)
+        self.setWindowTitle("Robot Kinematics Studio \u2014 Phase 7")
+        self.resize(1800, 850)
 
         self.robot: RobotModel = create_demo_2dof_robot()
 
@@ -101,22 +101,29 @@ class MainWindow(QMainWindow):
         self.analysis_panel = AnalysisPanel(self)
         self.right_tabs.addTab(self.analysis_panel, "Jacobian && Singularity")
 
+        self.workspace_panel = WorkspacePanel(self)
+        self.workspace_panel.workspace_ready.connect(self._on_workspace_ready)
+        self.workspace_panel.workspace_cleared.connect(self._on_workspace_cleared)
+        self.right_tabs.addTab(self.workspace_panel, "Workspace")
+
         right_layout.addWidget(self.right_tabs)
         root_layout.addWidget(right_frame, stretch=0)
 
     def _load_robot(self, robot: RobotModel) -> None:
         """Fully (re)initialize the UI around a new robot: 3D view,
         info panel, joint sliders, FK panel, IK panel, analysis panel,
-        status bar.
+        workspace panel, status bar.
         """
         self.robot = robot
         self.viz_widget.update_robot(self.robot)
+        self.viz_widget.clear_workspace()
         self.viz_widget.reset_camera()
         self._populate_info_panel()
         self.joint_panel.set_robot(self.robot)
         self.kinematics_panel.update_robot(self.robot)
         self.ik_panel.set_robot(self.robot)
         self.analysis_panel.set_robot(self.robot)
+        self.workspace_panel.set_robot(self.robot)
         self.statusBar().showMessage(
             f"Loaded '{self.robot.name}' \u2014 {self.robot.dof} DOF"
         )
@@ -132,6 +139,8 @@ class MainWindow(QMainWindow):
         """Slot connected to JointControlPanel.robot_changed: a slider
         moved (or Reset All was pressed). The robot's joint values are
         already updated in-place; just refresh the dependent views.
+        The workspace overlay (if any) still reflects the robot's
+        shape/limits, not its instantaneous pose, so it is left as-is.
         """
         self.viz_widget.update_robot(self.robot)
         self.kinematics_panel.update_robot(self.robot)
@@ -146,6 +155,15 @@ class MainWindow(QMainWindow):
         self.joint_panel.set_robot(self.robot)
         self.kinematics_panel.update_robot(self.robot)
         self.analysis_panel.update_analysis()
+
+    def _on_workspace_ready(self, positions) -> None:
+        """Slot connected to WorkspacePanel.workspace_ready: a sampling
+        run completed. Overlay the point cloud in the 3D viewport."""
+        self.viz_widget.show_workspace(positions)
+
+    def _on_workspace_cleared(self) -> None:
+        """Slot connected to WorkspacePanel.workspace_cleared."""
+        self.viz_widget.clear_workspace()
 
     def _populate_info_panel(self) -> None:
         """(Re)draw the "Robot Info" tab to reflect self.robot."""
@@ -190,8 +208,9 @@ class MainWindow(QMainWindow):
 
         note = QLabel(
             "\nUse 'Joint Control' or 'Inverse Kinematics' to move the "
-            "robot. 'Forward Kinematics' and 'Jacobian && Singularity' "
-            "always reflect the current pose."
+            "robot, 'Jacobian && Singularity' to analyze the current "
+            "pose, and 'Workspace' to sample and visualize the "
+            "reachable region."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #777777; font-size: 11px;")
